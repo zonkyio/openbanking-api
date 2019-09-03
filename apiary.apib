@@ -1,0 +1,552 @@
+FORMAT: 1A
+HOST: https://openbanking.zonky.cz/api
+
+# Zonky Open Banking API
+The Zonky Open Banking API is based on the Czech Open Banking Standard (https://github.com/czech-ba/COBS).
+A PSD2 licence and a corresponding Qualified Website Authentication Certificate for mutual TLS is required in order
+to call the production endpoints.
+
+## HTTP Status Codes
+We use the following status codes throughout the API:
+
+| Status                    | Description |
+|:--------------------------|:------------|
+| 200 OK                    | Request was successful                                                           |
+| 201 Created               | Request was successful and resource was created                                  |
+| 204 No Content            | Request was accepted but response is empty                                       |
+| 400 Bad Request           | Request is missing required parameters or parameter values are of incorrect type |
+| 401 Unauthorized          | User authentication is missing                                                   |
+| 403 Forbidden             | User is not allowed to use the resource                                          |
+| 404 Not Found             | Resource could not be found                                                      |
+| 500 Internal Server Error | Something went wrong                                                             |
+
+## Common Headers
+| Name           | Required | Description |
+|----------------|:--------:|:----------- |
+| `TPP-Name`     | yes      | The name of the original TPP that created the request. Eg. ‘Star Corporation, Inc.’. |
+| `X-Request-ID` | no       | Unique identifier for each request specified by TPP. |
+
+## Error Handling
+If something goes wrong, we use error object to report more details about errors.
+
+Error object example:
+
+```json
+{
+   "errors": [
+      {
+         "error": "COUNTRY_INVALID",
+         "message": "Invalid country code."
+      }, {
+         "error": "ANOTHER_ERROR_CODE",
+         "message": null
+      }, {
+         "error": "OTHER_ERROR_CODE",
+         "message": "Requested amount is too large"
+      }
+   ]
+}
+```
+
+
+## Group OAuth
+In order to start using the API, an OAuth client needs to be created for each application that is supposed to access
+Zonky user data. Once an OAuth client is created, returned credentials may be used to request user's authorization
+to access his/her Zonky data.
+
+### Clients [/oauth/clients]
+
+#### Create a new OAuth client [POST]
+
++ Request (application/json)
+
+    + Attributes (Client Request)
+
++ Response 201 (application/json)
+
+    + Attributes (Client Response)
+
++ Response 400 (application/json)
+
+    + Attributes (Validation Error)
+
++ Response 403 (application/json)
+
+    + Attributes (Authorization Error)
+
+
+### Client [/oauth/clients/{client_id}]
+
+#### Get OAuth client details [GET]
+
++ Parameters
+
+    + client_id: `NTRCZ-123456789-oZcga44J4Z` (string, required) Unique identifier of the OAuth client.
+
++ Response 200 (application/json)
+
+    + Attributes (Client Response)
+
++ Response 403 (application/json)
+
+    + Attributes (Authorization Error)
+
++ Response 404 (application/json)
+
+    + Attributes (Generic Error)
+
+
+#### Update OAuth client details [PUT]
+
++ Parameters
+
+    + client_id: `NTRCZ-123456789-oZcga44J4Z` (string, required) Unique identifier of the OAuth client.
+
++ Request (application/json)
+
+    + Attributes (Client Request)
+
++ Response 200 (application/json)
+
+    + Attributes (Client Response)
+
++ Response 400 (application/json)
+
+    + Attributes (Validation Error)
+
++ Response 403 (application/json)
+
+    + Attributes (Authorization Error)
+
++ Response 404 (application/json)
+
+    + Attributes (Generic Error)
+
+### Authorization [/oauth/authorize?response_type=code&client_id={client_id}&redirect_uri={redirect_uri}&state={state}]
+User needs to be redirected to the authorization endpoint at https://app.zonky.cz to request authorization to access
+his/her data. Then an access token may be retrieved and used to access API endpoints.
+
++ Parameters
+
+    + client_id: `NTRCZ-123456789-oZcga44J4Z` (string, required) Unique identifier of the OAuth client.
+    + redirect_uri: `https://openbankingcompany.com/callback` (string, required) One of the registered redirect URLs where the browser is redirected to with a unique authorization code.
+    + state: `1dXpJZTh4M` (string, required) Nonce value that will be returned when user is redirected back. Client should check that state matches. This value is opaque for the authorization server and client can send any value as long as it is unique for every request.
+
+#### Request authorization to access user data [GET]
+
++ Response 200
+
+
+### Access Token [/oauth/token]
+
+#### Request an access token [POST]
+
++ Request (application/x-www-form-urlencoded)
+
+    + Headers
+
+            Authorization: Basic TlRSQ1otMTIzNDU2Nzg5LW9aY2dhNDRKNFo6NU5XT2hvNHRNMnBPSWl1dXpJZTh4M0FSekI4N3o3VzFyNlRBNFJabQ==
+
+    + Body
+
+            grant_type=authorization_code&code=qf1xIu&redirect_uri=https://openbankingcompany.com/callback
+
++ Response 200 (application/json)
+
+    + Attributes (Access Token Response)
+
++ Request refresh (application/x-www-form-urlencoded)
+
+    + Headers
+
+            Authorization: Basic TlRSQ1otMTIzNDU2Nzg5LW9aY2dhNDRKNFo6NU5XT2hvNHRNMnBPSWl1dXpJZTh4M0FSekI4N3o3VzFyNlRBNFJabQ==
+
+    + Body
+
+            grant_type=refresh_token&refresh_token=d33c18a7-cc94-4e35-9ac3-c67528a602f4
+
++ Response 200 (application/json)
+
+    + Attributes (Access Token Response)
+
+
+## Group Account Information Services
+
+### Accounts [/v1/my/accounts]
+
+#### Get a list of accounts [GET]
+
++ Response 200 (application/json)
+
+    + Attributes (object)
+        - accounts (array[Account], required)
+
+
+### Account Balance [/v1/my/accounts/{id}/balance]
+
+#### Get a list of balances for an account [GET]
+
++ Parameters
+
+    + id: `3001245125` (string, required) Unique system identification of the client account.
+
++ Response 200 (application/json)
+
+    + Attributes (object)
+        - balances (array[Balance], required)
+
++ Response 400 (application/json)
+
+    + Attributes (object)
+        + errors (array[Invalid Currency Error], required)
+
++ Response 404 (application/json)
+
+    + Attributes (object)
+        + errors (array[ID Not Found Error], required)
+
+
+### Transactions [/v1/my/accounts/{id}/transactions?fromDate={fromDate}&toDate={toDate}]
+
+#### Get a list of transactions for an account [GET]
+
++ Parameters
+
+    + id: `3001245125` (string, required) Unique system identification of the client account.
+    + fromDate: `2017-01-31T00:00:00.000+01:00` (string, optional)
+    + toDate: `2017-01-31T00:00:00.000+01:00` (string, optional)
+
++ Response 200 (application/json)
+
+    + Attributes (array[Transactions])
+
++ Response 400 (application/json)
+
+    + Attributes (object)
+        + errors (array[Invalid Currency Error], required)
+
++ Response 404 (application/json)
+
+    + Attributes (object)
+        + errors (array[ID Not Found Error], required)
+
+
+## Group Payment Initiation Services
+
+### Balance Check [/my/payments/balanceCheck]
+
+#### Check balance for an account [POST]
+
++ Request (application/json)
+
+    + Attributes (Balance Check)
+
++ Response 200 (application/json)
+
+    + Attributes (Balance Result)
+
+
+### Payments [/my/payments]
+
+#### Create a new payment [POST]
+
++ Request (application/json)
+
+    + Attributes (Payment Create Request)
+
++ Response 200 (application/json)
+
+    + Attributes (Payment Response)
+
+
+### Payment [/my/payments/{paymentId}]
+
+#### Get details of an existing payment [GET]
+
++ Parameters
+
+    + paymentId: `4510123025` (string, required) Unique system identification of the payment.
+
++ Response 200 (application/json)
+
+    + Attributes (Payment Response)
+
++ Response 404 (application/json)
+
+    + Attributes (object)
+        + errors (array[ID Not Found Error], required)
+
+#### Delete an unauthorized payment [DELETE]
+
++ Parameters
+
+    + paymentId: `4510123025` (string, required) Unique system identification of the payment.
+
++ Response 204 (application/json)
+
++ Response 404 (application/json)
+
+    + Attributes (object)
+        + errors (array[ID Not Found Error], required)
+
+
+### Payment Status [/payments/{paymentId}/status]
+
+#### Get status of an existing payment [GET]
+
++ Parameters
+
+    + paymentId: `4510123025` (string, required) Unique system identification of the payment.
+
++ Response 200 (application/json)
+
+    + Attributes (Payment Status Response)
+
++ Response 404 (application/json)
+
+    + Attributes (object)
+        + errors (array[ID Not Found Error], required)
+
+
+### Payment Authorization [/my/payments/{paymentId}/sign/{signId}]
+
+#### Initiate payment authorization [POST]
+
++ Parameters
+
+    + paymentId: `4510123025` (string, required) Unique system identification of the payment.
+    + signId: `12156` (string, required) Unique system identification of the payment authorization.
+
++ Request (application/json)
+
+    + Attributes (Initiation Request)
+
++ Response 200 (application/json)
+
+    + Attributes (Initiation Response)
+
++ Response 404 (application/json)
+
+    + Attributes (object)
+        + errors (array[ID Not Found Error], required)
+
+#### Get payment authorization details [GET]
+
++ Parameters
+
+    + paymentId: `4510123025` (string, required) Unique system identification of the payment.
+    + signId: `12156` (string, required) Unique system identification of the payment authorization.
+
++ Response 200 (application/json)
+
+    + Attributes (Authorization Detail)
+
++ Response 404 (application/json)
+
+    + Attributes (object)
+        + errors (array[ID Not Found Error], required)
+
+
+# Data Structures
+
+## Client Request (object)
+- name: `Open Banking Application` (string, required) Name of the client (application).
+- contact: `application@openbankingcompany.com` (string, required) Email address of the contact person.
+- scopes (array, required) Scopes required by the client (application).
+    - (enum)
+        - SCOPE_OPENBANKING_AIS (string) Equivalent to the `PSP_AI` role from the PSD2 certificate for Account Information Service Providers.
+        - SCOPE_OPENBANKING_PIS (string) Equivalent to the `PSP_PI` role from the PSD2 certificate for Payment Initiation Service Providers.
+- redirect_uris: `https://openbankingcompany.com/callback` (array[string], required) Up to 3 registered redirect URLs.
+
+## Client Response (Client Request)
+- client_id: `NTRCZ-123456789-oZcga44J4Z` (string, required) Client ID based on PSD2 licence with random suffix.
+- client_secret: `5NWOho4tM2pOIiuuzIe8x3ARzB87z7W1r6TA4RZm` (string, required) Randomly generated client secret.
+
+## Access Token Response (object)
+- access_token: `c5f6b996-47aa-4c59-8fc7-8a03fcf5da9d` (string, required)
+- token_type: `bearer` (string, required)
+- refresh_token: `d33c18a7-cc94-4e35-9ac3-c67528a602f4` (string, required)
+- expires_in: `299`  (number, required)
+- scope: `SCOPE_OPENBANKING_AIS` (string, required)
+
+## Invalid Currency Error (object)
+- error: `AC09` (string, required)
+- message: `InvalidAccountCurrency` (string, required)
+
+## ID Not Found Error (object)
+- error: `ID_NOT_FOUND` (string, required)
+
+## Validation Error (object)
+- error: `VALIDATION_ERROR` (string, required)
+- errorDescription: `The request validation did not pass` (string, required)
+- uuid: `0c6cc292-edae-4ed2-96c4-97073f66ba0b` (string, required)
+- fieldErrors (array, optional)
+    - (object)
+        - fieldName: `property` (string, required)
+        - rejectedValue: `invalid value` (string, required)
+        - errorType: `Pattern` (string, required)
+
+## Authorization Error (object)
+- error: `UNAUTHORIZED_REQUEST` (string, required)
+- error_description: `Invalid TPP certificate` (string, required)
+- uuid: `a05be302-8c62-41c4-9ead-d0247b493a9c` (string, required)
+
+## Generic Error (object)
+- error: `generic` (string, required)
+- error_description: `generic error (entity was not found)` (string, required)
+- uuid: `bdab42a8-f861-451d-ae99-86d259aa3b3f` (string, required)
+
+## Account (object)
+- id: `3001245125` (string, required) Unique system identification of the client account.
+- identification (object, required)
+    - iban: `CZ1560000000002020010045` (string, required)
+- currency: `CZK` (string, required)
+- servicer (Servicer, required)
+- productI18N: `Investor` (string, optional)
+
+## Servicer (object)
+- bankCode: `6000` (string, optional)
+- countryCode: `CZ` (string, optional)
+- bic: `PMBPCZPP` (string, optional)
+
+## Balance (object)
+- type (object, required) Indicates the balance type to which is this information related.
+    - codeOrProprietary (object, required)
+        - code: `CLAV` (string, required)
+- amount (Amount, required)
+- creditDebitIndicator (Credit Debit Indicator, required)  Indicates whether the account balance is positive or negative (in debt).
+- date (object, required) Date and time indicating when the balance was obtained.
+    - dateTime: `2017-02-17T12:32:41.0Z` (string, required)
+
+## Amount (object)
+- value: `1000` (number, required)
+- currency: `CZK` (string, required)
+
+## Transactions (object)
+- transactions (array[Transaction], required)
+- pageNumber: 2 (number, required)
+- pageCount: 5 (number, required)
+- pageSize: 10 (number, required)
+- totalCount: 50 (number, required)
+
+## Transaction (object)
+- entryReference: `DESJK98932` (string, optional) Identification number of the payment assigned by the bank.
+- amount (Amount, required)
+- creditDebitIndicator (Credit Debit Indicator, required)  Indicates whether the account balance is positive or negative (in debt).
+- status (Transaction Status, required)  Item status in the account from the point of view of the bank.
+- bookingDate (Local Date, required) Date of payment processing/posting by the bank.
+- valueDate (Local Date, required) Due date
+- bankTransactionCode (object, required) Bank transaction code according to enumeration issued by Czech bank association for this particular payment. Code contains 1st to 3rd level of detail according to enumeration camt.053 of ČBA standard.
+    - proprietary (object, required)
+        - code: `40000501000` (string, required)
+        - issuer: `Czech Banking Association` (string, required) The bank transaction code enumeration issuer. This field has always a value of "Czech Banking Association".
+- entryDetails (object, required)
+    - transactionDetails (Transaction Details, required)
+
+## Credit Debit Indicator (enum)
+- DBIT (string) Debit indicator
+- CRDT (string) Other cases indicator
+
+## Transaction Status (enum)
+- BOOK (string) Posted transaction
+- PDNG (string) Blocked transaction
+
+## Local Date (object)
+- date: `2017-01-31T00:00:00.000` (string, required)
+
+## Transaction Details (object)
+- relatedParties (object)
+    - debtor (object)
+        - name: `Debtor` (string, optional)
+- relatedAgents (object)
+    - debtorAgent (Bank Agent, optional)
+    - creditorAgent (Bank Agent, optional)
+- remittanceInformation (object, optional)
+    - structured (object, required)
+        - creditorReferenceInformation (object, required)
+            - reference: reference (string, required)
+
+## Bank Agent (object)
+- financialInstitutionIdentification (object)
+    - bic: `CZ0708000000001019382023` (string, required)
+    - clearingSystemMemberIdentification (object, required)
+        - memberIdentification: identification (string, required)
+
+## Balance Check (object)
+- exchangeIdentification: `584161` (string, required) Unique identification of the request.
+- debtorAccount (Debtor Account, required) Payer account.
+- transactionDetails (object, required)
+    - currency: `CZK` (string, required)
+    - totalAmount: `1000` (number, required)
+
+## Balance Result (object)
+- responseIdentification: `1010` (number, required) Unique identification of response to query for Balance Check.
+- exchangeIdentification: `12842566` (string, required) Repeated identification of a payment transaction (query for Balance Check) from the issuer of the card to which the request for Balance Check linked to the account.
+- response (Balance Result Code, required)
+
+## Balance Result Code (enum)
+- APPR (string) Enough funds on this account.
+- DECL (string) Insufficient funds on this account.
+
+## Payment Create Request (object)
+- paymentIdentification (object, required)
+    - instructionIdentification: `46545646546546` (string, required) unique identification of the payment instruction.
+- amount (object, required)
+    - instructedAmount (Amount, required)
+- requestedExecutionDate: `2019-01-01` (string, optional) Requested date to execute the transaction.
+- debtorAccount (Debtor Account, required) Information about debtor account.
+- creditorAccount (Creditor Account, required) Information about creditor account.
+
+## Debtor Account
+- identification (object, required)
+    - iban: `CZ1560000000002020010045` (string, required)
+    - other (object, optional)
+        - identification: `VS9212114545` (string, required) Unique system identification of the client account.
+- currency: `CZK` (string, optional)
+
+## Creditor Account
+- identification (object, required)
+    - iban: `CZ1560000000002020010045` (string, required)
+
+## Payment Response (Payment Create Request)
+- transactionIdentification: `445` (string, required)
+- serviceLevel (object, required)
+    - code: `DMCT` (string, required)
+- signInfo (Sign Info, required)
+- instructionStatus (Instruction Status, required)
+- scenarios: `SMS` (array[string], required)
+
+## Instruction Status (enum)
+- ACTC (string) AcceptedTechnicalValidation – Authentication and syntactical validation are successful.
+- RJCT (string) Rejected – Payment rejected.
+- ACSP (string) AcceptedSettlementInProcess – The payment initiation has been accepted for execution.
+- ACSC (string) AcceptedSettlementCompleted – Settlement on the debtor´s account has been completed.
+
+## Payment Status Response (object)
+- instructionStatus (Instruction Status, required)
+
+## Initiation Request (object)
+- authorizationType: `SMS` (string, required)
+- redirectUrl: `https://www.bank.cz/redirect` (string, required)
+
+## Initiation Response (object)
+- authorizationType: `SMS` (string, required)
+- signInfo (Sign Info, required)
+- href (object, required)
+    - url: `https://zonky,cz/psd2-user-auth-page`
+
+## Sign Info (object)
+- state (Authorization Status, required) Status of current transaction authorization.
+- signId: `12546452` (string, required) Unique identifier for current transaction authorization.
+
+## Authorization Status (enum)
+- OPEN      (string) Transaction created.
+- INITIATED (string) Transaction authorization started.
+- FAILED    (string) Transaction expired or failed due to unsuccessful authentication attempts.
+- CANCELLED (string) Transaction cancelled.
+- CONFIRMED (string) Transactions confirmed by the client.
+
+## Authorization Detail (object)
+- signInfo (Sign Info, required)
+- authorizationType: `SMS` (string, optional)
+- scenarios: `SMS` (array[string], required) A set of possible authorization scenarios.
