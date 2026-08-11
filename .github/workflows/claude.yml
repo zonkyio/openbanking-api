@@ -12,5 +12,5 @@ on:
 
 jobs:
   claude:
-    uses: zonkyio/org-actions/.github/workflows/reusable-claude-mention.yml@master
+    uses: zonkyio/org-actions/.github/workflows/reusable-claude-mention.yml@v2.2
     secrets: inherit
