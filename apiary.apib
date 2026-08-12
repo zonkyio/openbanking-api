@@ -2,61 +2,180 @@ FORMAT: 1A
 HOST: https://openbanking.zonky.cz/api
 
 # Zonky Open Banking API
-The Zonky Open Banking API is based on the Czech Open Banking Standard (https://github.com/czech-ba/COBS).
-A PSD2 licence and a corresponding Qualified Website Authentication Certificate for mutual TLS is required in order
-to call the production endpoints.
 
-## HTTP Status Codes
-We use the following status codes throughout the API:
+The Zonky Open Banking API lets a licensed third party (TPP) read data about a Zonky user's investment
+wallet on that user's behalf. It is based on the Czech Open Banking Standard
+(https://github.com/czech-ba/COBS) and on Directive (EU) 2015/2366 (PSD2).
 
-| Status                    | Description |
-|:--------------------------|:------------|
-| 200 OK                    | Request was successful                                                           |
-| 201 Created               | Request was successful and resource was created                                  |
-| 204 No Content            | Request was accepted but response is empty                                       |
-| 400 Bad Request           | Request is missing required parameters or parameter values are of incorrect type |
-| 401 Unauthorized          | User authentication is missing                                                   |
-| 403 Forbidden             | User is not allowed to use the resource                                          |
-| 404 Not Found             | Resource could not be found                                                      |
-| 500 Internal Server Error | Something went wrong                                                             |
+## What the API offers
+
+**Account Information Services (AIS) only:**
+
+- list of the user's investment wallets,
+- current balance of a wallet,
+- transaction history of a wallet.
+
+**Payment Initiation Services (PIS) are not supported.** There are no payment endpoints. Of the PSD2
+roles carried by the certificate only `PSP_AI` grants access to this API; `PSP_PI`, `PSP_AS` and
+`PSP_IC` are ignored.
+
+All amounts are in **CZK**. No other currency is supported.
+
+## Prerequisites
+
+1. **Licence.** A payment institution licence covering account information services, registered with
+   the Czech National Bank (https://apl.cnb.cz/ewi/).
+
+2. **Certificate.** A qualified website authentication certificate (QWAC) under eIDAS, extended with
+   the PSD2 attributes of ETSI TS 119 495:
+
+    | Attribute | OID | Note |
+    |:----------|:----|:-----|
+    | `organizationIdentifier` | `2.5.4.97` | Required. Identifies the TPP and becomes the prefix of the `client_id`. |
+    | `organization` | `2.5.4.10` | Required. Stored as the TPP name. |
+    | qcStatement `PSP_AI` | `0.4.0.19495.1.3` | Required. Without it, registration is rejected. |
+    | qcStatement `PSP_PI` | `0.4.0.19495.1.2` | Ignored (PIS is not supported). |
+    | qcStatement `PSP_AS` | `0.4.0.19495.1.1` | Ignored. |
+    | qcStatement `PSP_IC` | `0.4.0.19495.1.4` | Ignored. |
+
+3. **Onboarding.** Registration is not self-service. Contact **info@zonky.cz** with your company
+   details, your CNB licence number and your intended use case before you call any endpoint.
+
+## Transport security
+
+All server-to-server calls run over **mutual TLS** — present the QWAC and its private key in the TLS
+handshake. Keep the private key in your backend; never ship it in a mobile app or in browser-side code.
+
+Zonky's edge validates the certificate (validity dates, trust chain, revocation) and passes it on to
+the application, which reads the `organizationIdentifier`, the organization name and the PSD2 roles out
+of it. On the client registration endpoints, a missing or unparsable certificate is answered with
+`403 UNAUTHORIZED_REQUEST` and the description `Missing TPP certificate` or `Invalid TPP certificate`;
+on the token endpoint the same condition fails the token request.
+
+## Hosts
+
+| Host | Used for |
+|:-----|:---------|
+| `https://openbanking.zonky.cz/api` | Server-to-server calls: client registration, OAuth token, AIS endpoints. |
+| `https://app.zonky.cz/api` | Browser only: the authorization endpoint where the user signs in and grants consent. |
+
+## Integration flow
+
+1. Register an OAuth client with your certificate — [Create a new OAuth client](#reference/oauth/clients/create-a-new-oauth-client).
+2. Redirect the user's browser to the [authorization endpoint](#reference/oauth/authorization) and let
+   them sign in and approve the consent.
+3. Exchange the returned `code` for an [access token](#reference/oauth/access-token).
+4. Call the [AIS endpoints](#reference/account-information-services) with the access token.
+5. Refresh the access token before it expires and repeat step 4.
+
+## Token lifetimes
+
+| Token | Lifetime | Note |
+|:------|:---------|:-----|
+| Authorization code | 5 minutes | Single use. |
+| Access token | 5 minutes | Opaque (not a JWT), validated server-side. |
+| Refresh token | 180 days | Rotated — every refresh returns a new refresh token and invalidates the previous one. The 180 days are counted from the issuance of the token you hold. |
 
 ## Common Headers
-| Name           | Required | Description |
-|----------------|:--------:|:----------- |
-| `TPP-Name`     | yes      | The name of the original TPP that created the request. Eg. ‘Star Corporation, Inc.’. |
-| `X-Request-ID` | no       | Unique identifier for each request specified by TPP. |
+
+| Name | Required | Used on | Description |
+|:-----|:--------:|:--------|:------------|
+| `Authorization` | yes | AIS | `Bearer <access_token>`. |
+| `Authorization` | yes | token endpoint | HTTP Basic, `Base64(client_id:client_secret)`. |
+| `TPP-Name` | yes | AIS | Name of the TPP that created the request. Recorded in the audit log; a missing or blank value is rejected with `MISSING_HEADER`. |
+| `X-Request-Id` | no | AIS | Your own identifier of the request. It is echoed back in the response header and stored in the audit log — quote it when reporting a problem. |
+| `Content-Type` | yes | POST / PUT | `application/json`, or `application/x-www-form-urlencoded` on the token endpoint. |
+
+## HTTP Status Codes
+
+| Status | Description |
+|:-------|:------------|
+| 200 OK | Request was successful. |
+| 201 Created | Client was registered. |
+| 400 Bad Request | Invalid parameter, invalid body, or a missing required header. |
+| 401 Unauthorized | Missing or invalid access token, or invalid client credentials. |
+| 403 Forbidden | Certificate problem, requested scopes not covered by the certificate, or token without the required scope. |
+| 404 Not Found | The requested resource does not exist or does not belong to the authorized user. |
+| 500 Internal Server Error | Something went wrong on our side. |
+| 501 Not Implemented | Unknown path or an HTTP method the endpoint does not support. |
 
 ## Error Handling
-If something goes wrong, we use error object to report more details about errors.
 
-Error object example:
+AIS endpoints answer with a list of errors:
 
 ```json
 {
    "errors": [
       {
-         "error": "COUNTRY_INVALID",
-         "message": "Invalid country code."
-      }, {
-         "error": "ANOTHER_ERROR_CODE",
-         "message": null
-      }, {
-         "error": "OTHER_ERROR_CODE",
-         "message": "Requested amount is too large"
+         "error": "AC09",
+         "message": "InvalidAccountCurrency"
       }
    ]
 }
 ```
 
+| Code | Status | Meaning |
+|:-----|:------:|:--------|
+| `AC09` | 400 | The `currency` query parameter was sent. Zonky operates in CZK only and rejects the parameter with any value. |
+| `MISSING_HEADER` | 400 | The `TPP-Name` header is missing or blank. |
+| `PARAMETER_INVALID` | 400 | A query or path parameter has the wrong type or format (for example an unparsable date). |
+| `FIELD_INVALID` | 400 | The JSON body could not be read or a field has the wrong type. |
+| `ID_NOT_FOUND` | 404 | No wallet with the given `id` belongs to the authorized user. |
+| `FORBIDDEN` | 403 | The access token lacks `SCOPE_OPENBANKING_AIS`, or the user lacks the investor role. |
+| `NOT_IMPLEMENTED` | 501 | Unknown path or unsupported HTTP method. |
+| `GENERIC` | 500 | Unexpected server-side error. |
 
-## Group OAuth
-In order to start using the API, an OAuth client needs to be created for each application that is supposed to access
-Zonky user data. Once an OAuth client is created, returned credentials may be used to request user's authorization
-to access his/her Zonky data.
+The OAuth client endpoints use a different shape — a single error object with a `uuid` you can quote to
+support:
 
-### Clients [/oauth/clients]
+```json
+{
+   "uuid": "a05be302-8c62-41c4-9ead-d0247b493a9c",
+   "error": "UNAUTHORIZED_REQUEST",
+   "description": "Missing TPP certificate",
+   "error_description": "Missing TPP certificate"
+}
+```
 
-#### Create a new OAuth client [POST]
+Empty and `null` fields are omitted from all responses.
+
+## Support
+
+| Topic | Contact |
+|:------|:--------|
+| Onboarding, licence verification, test access | info@zonky.cz |
+| Public information for third parties | https://www.zonky.cz/aplikace-tretich-stran/ |
+
+When reporting a problem, include your `client_id`, the `X-Request-Id` you sent, the approximate time
+of the request in UTC and the full error response body.
+
+# Group OAuth
+
+Every endpoint in this group requires the PSD2 certificate. The registration endpoints are reachable
+only on `openbanking.zonky.cz`, never on the public Zonky API domain.
+
+## Clients [/oauth/clients]
+
+### Create a new OAuth client [POST]
+
+Registers an OAuth client for one TPP application. The `client_id` is derived from the
+`organizationIdentifier` of your certificate followed by ten random characters; the `client_secret` is
+40 characters long and is returned **in plain text only from this endpoint, from `GET` and from `PUT`**.
+
+The requested `scopes` must be a subset of the roles present in your certificate, and must use the full
+identifier — `["AIS"]` is rejected.
+
+```
+curl -X POST https://openbanking.zonky.cz/api/oauth/clients \
+     --cert tpp.pem --key tpp.key \
+     -H 'Content-Type: application/json' \
+     -d '{
+           "name": "Acme Personal Finance",
+           "contact": "ops@acme.example",
+           "scopes": ["SCOPE_OPENBANKING_AIS"],
+           "redirect_uris": ["https://acme.example/zonky/callback"]
+         }'
+```
 
 + Request (application/json)
 
@@ -74,14 +193,16 @@ to access his/her Zonky data.
 
     + Attributes (Authorization Error)
 
-
-### Client [/oauth/clients/{client_id}]
-
-#### Get OAuth client details [GET]
+## Client [/oauth/clients/{client_id}]
 
 + Parameters
 
-    + client_id: `NTRCZ-123456789-oZcga44J4Z` (string, required) Unique identifier of the OAuth client.
+    + client_id: `NTRCZ-3570967-aiJEfbbfYa` (string, required) Unique identifier of the OAuth client.
+
+### Get OAuth client details [GET]
+
+Returns the registration including the `client_secret`, so you can recover the secret if you lose it.
+Only the certificate that the client was registered with can read it.
 
 + Response 200 (application/json)
 
@@ -95,12 +216,10 @@ to access his/her Zonky data.
 
     + Attributes (Generic Error)
 
+### Update OAuth client details [PUT]
 
-#### Update OAuth client details [PUT]
-
-+ Parameters
-
-    + client_id: `NTRCZ-123456789-oZcga44J4Z` (string, required) Unique identifier of the OAuth client.
+Overwrites the name, contact, scopes and redirect URIs of an existing client. The `client_id` and the
+`client_secret` stay unchanged.
 
 + Request (application/json)
 
@@ -122,34 +241,67 @@ to access his/her Zonky data.
 
     + Attributes (Generic Error)
 
-### Authorization [/oauth/authorize?response_type=code&client_id={client_id}&redirect_uri={redirect_uri}&state={state}]
-User needs to be redirected to the authorization endpoint at https://app.zonky.cz to request authorization to access
-his/her data. Then an access token may be retrieved and used to access API endpoints.
+## Authorization [/oauth/authorize?response_type=code&client_id={client_id}&redirect_uri={redirect_uri}&scope={scope}&state={state}]
+
+This is the only endpoint the user's browser touches, and the only one served from `app.zonky.cz`:
+
+```
+https://app.zonky.cz/api/oauth/authorize
+    ?response_type=code
+    &client_id=NTRCZ-3570967-aiJEfbbfYa
+    &redirect_uri=https%3A%2F%2Facme.example%2Fzonky%2Fcallback
+    &scope=SCOPE_OPENBANKING_AIS
+    &state=1dXpJZTh4M
+```
+
+The user signs in to Zonky, approves the consent screen, and the browser is redirected to
+
+```
+https://acme.example/zonky/callback?code=<AUTHORIZATION_CODE>&state=1dXpJZTh4M
+```
+
+Verify that `state` matches the value you sent before you use the code.
 
 + Parameters
 
-    + client_id: `NTRCZ-123456789-oZcga44J4Z` (string, required) Unique identifier of the OAuth client.
-    + redirect_uri: `https://openbankingcompany.com/callback` (string, required) One of the registered redirect URLs where the browser is redirected to with a unique authorization code.
-    + state: `1dXpJZTh4M` (string, required) Nonce value that will be returned when user is redirected back. Client should check that state matches. This value is opaque for the authorization server and client can send any value as long as it is unique for every request.
+    + client_id: `NTRCZ-3570967-aiJEfbbfYa` (string, required) Unique identifier of the OAuth client.
+    + redirect_uri: `https://acme.example/zonky/callback` (string, required) One of the registered redirect URLs. Must match exactly, including the URL encoding, and must be repeated when the code is exchanged for a token.
+    + scope: `SCOPE_OPENBANKING_AIS` (string, required) Space-separated list of requested scopes.
+    + state: `1dXpJZTh4M` (string, required) Opaque nonce returned unchanged in the redirect. Use it to protect against CSRF.
 
-#### Request authorization to access user data [GET]
+### Request authorization to access user data [GET]
 
 + Response 200
 
+## Access Token [/oauth/token]
 
-### Access Token [/oauth/token]
+### Request an access token [POST]
 
-#### Request an access token [POST]
+Exchanges an authorization code for an access token, or refreshes an existing access token. Both
+variants require mutual TLS and HTTP Basic authentication with the client credentials.
+
+Refresh tokens are rotated: the response always contains a new `refresh_token` and the one you sent
+stops working. Refresh proactively, shortly before `expires_in` elapses, rather than reactively after a
+`401`.
+
+```
+curl -X POST https://openbanking.zonky.cz/api/oauth/token \
+     --cert tpp.pem --key tpp.key \
+     -u 'NTRCZ-3570967-aiJEfbbfYa:<client_secret>' \
+     -d 'grant_type=authorization_code' \
+     -d 'code=qf1xIu' \
+     -d 'redirect_uri=https://acme.example/zonky/callback'
+```
 
 + Request (application/x-www-form-urlencoded)
 
     + Headers
 
-            Authorization: Basic TlRSQ1otMTIzNDU2Nzg5LW9aY2dhNDRKNFo6NU5XT2hvNHRNMnBPSWl1dXpJZTh4M0FSekI4N3o3VzFyNlRBNFJabQ==
+            Authorization: Basic TlRSQ1otMzU3MDk2Ny1haUpFZmJiZllhOjVOV09obzR0TTJwT0lpdXV6SWU4eDNBUnpCODd6N1cxcjZUQTRSWm0=
 
     + Body
 
-            grant_type=authorization_code&code=qf1xIu&redirect_uri=https://openbankingcompany.com/callback
+            grant_type=authorization_code&code=qf1xIu&redirect_uri=https://acme.example/zonky/callback
 
 + Response 200 (application/json)
 
@@ -159,7 +311,7 @@ his/her data. Then an access token may be retrieved and used to access API endpo
 
     + Headers
 
-            Authorization: Basic TlRSQ1otMTIzNDU2Nzg5LW9aY2dhNDRKNFo6NU5XT2hvNHRNMnBPSWl1dXpJZTh4M0FSekI4N3o3VzFyNlRBNFJabQ==
+            Authorization: Basic TlRSQ1otMzU3MDk2Ny1haUpFZmJiZllhOjVOV09obzR0TTJwT0lpdXV6SWU4eDNBUnpCODd6N1cxcjZUQTRSWm0=
 
     + Body
 
@@ -169,26 +321,66 @@ his/her data. Then an access token may be retrieved and used to access API endpo
 
     + Attributes (Access Token Response)
 
+# Group Account Information Services
 
-## Group Account Information Services
+Every endpoint in this group requires mutual TLS, an access token with the `SCOPE_OPENBANKING_AIS`
+scope and the `TPP-Name` header. The authorized user must hold the investor or the rentier role;
+otherwise the call is rejected with `403 FORBIDDEN`.
 
-### Accounts [/v1/my/accounts]
+## Accounts [/openbanking/v1/my/accounts]
 
-#### Get a list of accounts [GET]
+### Get a list of accounts [GET]
+
+Returns the active investment wallets of the authorized user. The list is empty when the user has none.
+The `id` of a wallet is its variable symbol and is the `{id}` used by the balance and transaction
+endpoints.
+
+```
+curl https://openbanking.zonky.cz/api/openbanking/v1/my/accounts \
+     --cert tpp.pem --key tpp.key \
+     -H 'Authorization: Bearer 9f8d7c6b-5a4e-3d2c-1b0a-9f8e7d6c5b4a' \
+     -H 'TPP-Name: Acme Personal Finance' \
+     -H 'X-Request-Id: 6f0d2f7c-2a29-4a0f-9a6e-1f1b0a2c3d4e'
+```
+
++ Request
+
+    + Headers
+
+            Authorization: Bearer 9f8d7c6b-5a4e-3d2c-1b0a-9f8e7d6c5b4a
+            TPP-Name: Acme Personal Finance
+            X-Request-Id: 6f0d2f7c-2a29-4a0f-9a6e-1f1b0a2c3d4e
 
 + Response 200 (application/json)
 
     + Attributes (object)
         - accounts (array[Account], required)
 
++ Response 400 (application/json)
 
-### Account Balance [/v1/my/accounts/{id}/balance]
+    + Attributes (object)
+        + errors (array[Missing Header Error], required)
 
-#### Get a list of balances for an account [GET]
+## Account Balance [/openbanking/v1/my/accounts/{id}/balance]
+
+### Get a list of balances for an account [GET]
+
+Returns exactly one balance — the amount available on the wallet (`CLAV`), timestamped with the moment
+the request was processed. The value is always non-negative; `creditDebitIndicator` carries the sign.
+
+Do not send the `currency` query parameter. It is accepted by the router but any non-empty value is
+rejected with `AC09`, including `CZK`.
 
 + Parameters
 
-    + id: `3001245125` (string, required) Unique system identification of the client account.
+    + id: `9212114545` (string, required) Variable symbol of the wallet, taken from `accounts[].id`.
+
++ Request
+
+    + Headers
+
+            Authorization: Bearer 9f8d7c6b-5a4e-3d2c-1b0a-9f8e7d6c5b4a
+            TPP-Name: Acme Personal Finance
 
 + Response 200 (application/json)
 
@@ -205,20 +397,40 @@ his/her data. Then an access token may be retrieved and used to access API endpo
     + Attributes (object)
         + errors (array[ID Not Found Error], required)
 
+## Transactions [/openbanking/v1/my/accounts/{id}/transactions?fromDate={fromDate}&toDate={toDate}]
 
-### Transactions [/v1/my/accounts/{id}/transactions?fromDate={fromDate}&toDate={toDate}]
+### Get a list of transactions for an account [GET]
 
-#### Get a list of transactions for an account [GET]
+Returns the transactions of the wallet. Both dates are optional; omitting them returns the range the
+core system serves by default.
+
+The whole result is returned in a single response — `pageNumber` is always `0`, `pageCount` always `1`
+and `pageSize` equals `totalCount`. The paging fields exist for compatibility with the standard; there
+is no second page to fetch.
+
+```
+curl 'https://openbanking.zonky.cz/api/openbanking/v1/my/accounts/9212114545/transactions?fromDate=2026-04-01T00:00:00.000%2B02:00&toDate=2026-05-01T00:00:00.000%2B02:00' \
+     --cert tpp.pem --key tpp.key \
+     -H 'Authorization: Bearer 9f8d7c6b-5a4e-3d2c-1b0a-9f8e7d6c5b4a' \
+     -H 'TPP-Name: Acme Personal Finance'
+```
 
 + Parameters
 
-    + id: `3001245125` (string, required) Unique system identification of the client account.
-    + fromDate: `2017-01-31T00:00:00.000+01:00` (string, optional)
-    + toDate: `2017-01-31T00:00:00.000+01:00` (string, optional)
+    + id: `9212114545` (string, required) Variable symbol of the wallet, taken from `accounts[].id`.
+    + fromDate: `2026-04-01T00:00:00.000+02:00` (string, optional) Start of the range, ISO 8601 date-time.
+    + toDate: `2026-05-01T00:00:00.000+02:00` (string, optional) End of the range, ISO 8601 date-time.
+
++ Request
+
+    + Headers
+
+            Authorization: Bearer 9f8d7c6b-5a4e-3d2c-1b0a-9f8e7d6c5b4a
+            TPP-Name: Acme Personal Finance
 
 + Response 200 (application/json)
 
-    + Attributes (array[Transactions])
+    + Attributes (Transactions)
 
 + Response 400 (application/json)
 
@@ -230,326 +442,136 @@ his/her data. Then an access token may be retrieved and used to access API endpo
     + Attributes (object)
         + errors (array[ID Not Found Error], required)
 
-
-## Group Payment Initiation Services
-
-### Balance Check [/my/payments/balanceCheck]
-
-#### Check balance for an account [POST]
-
-+ Request (application/json)
-
-    + Attributes (Balance Check)
-
-+ Response 200 (application/json)
-
-    + Attributes (Balance Result)
-
-
-### Payments [/my/payments]
-
-#### Create a new payment [POST]
-
-+ Request (application/json)
-
-    + Attributes (Payment Create Request)
-
-+ Response 200 (application/json)
-
-    + Attributes (Payment Response)
-
-
-### Payment [/my/payments/{paymentId}]
-
-#### Get details of an existing payment [GET]
-
-+ Parameters
-
-    + paymentId: `4510123025` (string, required) Unique system identification of the payment.
-
-+ Response 200 (application/json)
-
-    + Attributes (Payment Response)
-
-+ Response 404 (application/json)
-
-    + Attributes (object)
-        + errors (array[ID Not Found Error], required)
-
-#### Delete an unauthorized payment [DELETE]
-
-+ Parameters
-
-    + paymentId: `4510123025` (string, required) Unique system identification of the payment.
-
-+ Response 204 (application/json)
-
-+ Response 404 (application/json)
-
-    + Attributes (object)
-        + errors (array[ID Not Found Error], required)
-
-
-### Payment Status [/payments/{paymentId}/status]
-
-#### Get status of an existing payment [GET]
-
-+ Parameters
-
-    + paymentId: `4510123025` (string, required) Unique system identification of the payment.
-
-+ Response 200 (application/json)
-
-    + Attributes (Payment Status Response)
-
-+ Response 404 (application/json)
-
-    + Attributes (object)
-        + errors (array[ID Not Found Error], required)
-
-
-### Payment Authorization [/my/payments/{paymentId}/sign/{signId}]
-
-#### Initiate payment authorization [POST]
-
-+ Parameters
-
-    + paymentId: `4510123025` (string, required) Unique system identification of the payment.
-    + signId: `12156` (string, required) Unique system identification of the payment authorization.
-
-+ Request (application/json)
-
-    + Attributes (Initiation Request)
-
-+ Response 200 (application/json)
-
-    + Attributes (Initiation Response)
-
-+ Response 404 (application/json)
-
-    + Attributes (object)
-        + errors (array[ID Not Found Error], required)
-
-#### Get payment authorization details [GET]
-
-+ Parameters
-
-    + paymentId: `4510123025` (string, required) Unique system identification of the payment.
-    + signId: `12156` (string, required) Unique system identification of the payment authorization.
-
-+ Response 200 (application/json)
-
-    + Attributes (Authorization Detail)
-
-+ Response 404 (application/json)
-
-    + Attributes (object)
-        + errors (array[ID Not Found Error], required)
-
-
 # Data Structures
 
 ## Client Request (object)
-- name: `Open Banking Application` (string, required) Name of the client (application).
-- contact: `application@openbankingcompany.com` (string, required) Email address of the contact person.
-- scopes (array, required) Scopes required by the client (application).
+- name: `Acme Personal Finance` (string, required) Name of the client (application). Shown to the user on the consent screen.
+- contact: `ops@acme.example` (string, required) E-mail address of the contact person.
+- scopes (array, required) Scopes required by the client (application). One or two entries; must be a subset of the roles in the certificate.
     - (enum)
-        - SCOPE_OPENBANKING_AIS (string) Equivalent to the `PSP_AI` role from the PSD2 certificate for Account Information Service Providers.
-        - SCOPE_OPENBANKING_PIS (string) Equivalent to the `PSP_PI` role from the PSD2 certificate for Payment Initiation Service Providers.
-- redirect_uris: `https://openbankingcompany.com/callback` (array[string], required) Up to 3 registered redirect URLs.
+        - SCOPE_OPENBANKING_AIS (string) Equivalent to the `PSP_AI` role from the PSD2 certificate for Account Information Service Providers. The only scope this API grants.
+- redirect_uris: `https://acme.example/zonky/callback` (array[string], required) One to three registered redirect URLs. Each must be a well-formed `https://` URL without surrounding whitespace.
 
 ## Client Response (Client Request)
-- client_id: `NTRCZ-123456789-oZcga44J4Z` (string, required) Client ID based on PSD2 licence with random suffix.
-- client_secret: `5NWOho4tM2pOIiuuzIe8x3ARzB87z7W1r6TA4RZm` (string, required) Randomly generated client secret.
+- client_id: `NTRCZ-3570967-aiJEfbbfYa` (string, required) The `organizationIdentifier` from the certificate followed by ten random characters.
+- client_secret: `5NWOho4tM2pOIiuuzIe8x3ARzB87z7W1r6TA4RZm` (string, required) Randomly generated 40-character secret. Returned in plain text; store it immediately.
 
 ## Access Token Response (object)
-- access_token: `c5f6b996-47aa-4c59-8fc7-8a03fcf5da9d` (string, required)
+- access_token: `9f8d7c6b-5a4e-3d2c-1b0a-9f8e7d6c5b4a` (string, required) Opaque token, not a JWT.
 - token_type: `bearer` (string, required)
-- refresh_token: `d33c18a7-cc94-4e35-9ac3-c67528a602f4` (string, required)
-- expires_in: `299`  (number, required)
-- scope: `SCOPE_OPENBANKING_AIS` (string, required)
+- refresh_token: `1a2b3c4d-5e6f-7a8b-9c0d-1e2f3a4b5c6d` (string, required) New value on every call; the previous refresh token stops working.
+- expires_in: `300` (number, required) Remaining lifetime of the access token in seconds.
+- scope: `SCOPE_OPENBANKING_AIS` (string, required) Space-separated list of granted scopes.
 
 ## Invalid Currency Error (object)
 - error: `AC09` (string, required)
-- message: `InvalidAccountCurrency` (string, required)
+- message: `InvalidAccountCurrency` (string, optional)
 
 ## ID Not Found Error (object)
 - error: `ID_NOT_FOUND` (string, required)
 
+## Missing Header Error (object)
+- error: `MISSING_HEADER` (string, required)
+- message: `Required header 'TPP-Name' is missing` (string, optional)
+
 ## Validation Error (object)
-- error: `VALIDATION_ERROR` (string, required)
-- errorDescription: `The request validation did not pass` (string, required)
 - uuid: `0c6cc292-edae-4ed2-96c4-97073f66ba0b` (string, required)
+- error: `VALIDATION_ERROR` (string, required)
+- description: `The request validation did not pass` (string, optional)
 - fieldErrors (array, optional)
     - (object)
-        - fieldName: `property` (string, required)
-        - rejectedValue: `invalid value` (string, required)
-        - errorType: `Pattern` (string, required)
+        - fieldName: `redirectUris` (string, required)
+        - rejectedValue: `http://acme.example/callback` (string, required)
+        - errorType: `UrlList` (string, required)
 
 ## Authorization Error (object)
-- error: `UNAUTHORIZED_REQUEST` (string, required)
-- error_description: `Invalid TPP certificate` (string, required)
 - uuid: `a05be302-8c62-41c4-9ead-d0247b493a9c` (string, required)
+- error: `UNAUTHORIZED_REQUEST` (string, required)
+- description: `Missing TPP certificate` (string, optional)
+- error_description: `Missing TPP certificate` (string, optional) Duplicate of `description`, kept for compatibility.
 
 ## Generic Error (object)
-- error: `generic` (string, required)
-- error_description: `generic error (entity was not found)` (string, required)
 - uuid: `bdab42a8-f861-451d-ae99-86d259aa3b3f` (string, required)
+- error: `generic` (string, required)
+- description: `generic error (entity was not found)` (string, optional)
 
 ## Account (object)
-- id: `3001245125` (string, required) Unique system identification of the client account.
+- id: `9212114545` (string, required) Variable symbol of the wallet. Used as `{id}` in the balance and transaction endpoints.
 - identification (object, required)
-    - iban: `CZ1560000000002020010045` (string, required)
-- currency: `CZK` (string, required)
+    - iban: `CZ1560000000009212114545` (string, required) IBAN derived from the wallet account number and bank code.
+- currency: `CZK` (string, required) Always `CZK`.
 - servicer (Servicer, required)
-- productI18N: `Investor` (string, optional)
+- productI18N: `RENTIER` (enum, optional) Type of the investment product held in the wallet.
+    - `INVESTOR` (string)
+    - `RENTIER` (string)
 - owner (object, required)
-    - givenNames: `John Richard` (string, required)
-    - familyName: `Doe` (string, required)
+    - givenNames: `Jan` (string, required)
+    - familyName: `Novák` (string, required)
 
 ## Servicer (object)
-- bankCode: `6000` (string, optional)
-- countryCode: `CZ` (string, optional)
-- bic: `PMBPCZPP` (string, optional)
+- bankCode: `6000` (string, optional) Code of the bank keeping the underlying account.
+- countryCode: `CZ` (string, optional) Always `CZ`.
+- bic: `PMBPCZPP` (string, optional) Always `PMBPCZPP`.
 
 ## Balance (object)
-- type (object, required) Indicates the balance type to which is this information related.
+- type (object, required) Indicates the balance type to which this information is related.
     - codeOrProprietary (object, required)
-        - code: `CLAV` (string, required)
+        - code: `CLAV` (string, required) ClosingAvailable — the amount available on the wallet.
 - amount (Amount, required)
-- creditDebitIndicator (Credit Debit Indicator, required)  Indicates whether the account balance is positive or negative (in debt).
-- date (object, required) Date and time indicating when the balance was obtained.
-    - dateTime: `2017-02-17T12:32:41.0Z` (string, required)
+- creditDebitIndicator (Credit Debit Indicator, required) Whether the balance is positive (`CRDT`) or negative (`DBIT`).
+- date (object, required) Moment the balance was read.
+    - dateTime: `2026-05-05T10:23:11.482+02:00` (string, required)
 
 ## Amount (object)
-- value: `1000` (number, required)
+- value: `12345.67` (number, required) Always non-negative; the direction is in `creditDebitIndicator`.
 - currency: `CZK` (string, required)
 
 ## Transactions (object)
+- pageNumber: 0 (number, required) Always `0`.
+- pageCount: 1 (number, required) Always `1`.
+- pageSize: 2 (number, required) Equals `totalCount`.
+- totalCount: 2 (number, required) Number of transactions returned.
 - transactions (array[Transaction], required)
-- pageNumber: 2 (number, required)
-- pageCount: 5 (number, required)
-- pageSize: 10 (number, required)
-- totalCount: 50 (number, required)
 
 ## Transaction (object)
-- entryReference: `DESJK98932` (string, optional) Identification number of the payment assigned by the bank.
+- entryReference: `DESJK98932` (string, optional) Identification of the transaction assigned by the bank.
 - amount (Amount, required)
-- creditDebitIndicator (Credit Debit Indicator, required)  Indicates whether the account balance is positive or negative (in debt).
-- status (Transaction Status, required)  Item status in the account from the point of view of the bank.
-- bookingDate (Local Date, required) Date of payment processing/posting by the bank.
-- valueDate (Local Date, required) Due date
-- bankTransactionCode (object, required) Bank transaction code according to enumeration issued by Czech bank association for this particular payment. Code contains 1st to 3rd level of detail according to enumeration camt.053 of ČBA standard.
+- creditDebitIndicator (Credit Debit Indicator, required) `DBIT` for withdrawals, `CRDT` otherwise.
+- status (Transaction Status, required) Item status in the account from the point of view of the bank.
+- bookingDate (Local Date, required) Date the transaction was posted.
+- valueDate (Local Date, required) Value date. For a transaction that is not posted yet, the next working day is used, shifted by one day for transactions created at 15:30 or later.
+- bankTransactionCode (object, required) Transaction code according to the enumeration issued by the Czech Banking Association.
     - proprietary (object, required)
-        - code: `40000501000` (string, required)
-        - issuer: `Czech Banking Association` (string, required) The bank transaction code enumeration issuer. This field has always a value of "Czech Banking Association".
+        - code: `10000107` (string, required) `10000101` for withdrawals, `10000107` otherwise.
+        - issuer: `CBA` (string, required) Always `CBA`.
 - entryDetails (object, required)
     - transactionDetails (Transaction Details, required)
 
 ## Credit Debit Indicator (enum)
-- DBIT (string) Debit indicator
-- CRDT (string) Other cases indicator
+- DBIT (string) Debit — money leaving the wallet
+- CRDT (string) Credit — money entering the wallet
 
 ## Transaction Status (enum)
 - BOOK (string) Posted transaction
-- PDNG (string) Blocked transaction
+- PDNG (string) Pending transaction
 
 ## Local Date (object)
-- date: `2017-01-31T00:00:00.000` (string, required)
+- date: `2026-04-15` (string, required) ISO 8601 date, without a time component.
 
 ## Transaction Details (object)
-- relatedParties (object)
-    - debtor (object)
-        - name: `Debtor` (string, optional)
-- relatedAgents (object)
+- relatedParties (object, optional) Present for incoming transactions when the counterparty name is known.
+    - debtor (object, required)
+        - name: `Jan Novák` (string, required)
+- relatedAgents (object, required) Holds the counterparty bank as `debtorAgent` for incoming transactions and as `creditorAgent` for outgoing ones.
     - debtorAgent (Bank Agent, optional)
     - creditorAgent (Bank Agent, optional)
-- remittanceInformation (object, optional)
+- remittanceInformation (object, optional) Present when the transaction carries a variable symbol.
     - structured (object, required)
         - creditorReferenceInformation (object, required)
-            - reference: reference (string, required)
+            - reference: `VS:9212114545` (string, required) Variable symbol prefixed with `VS:`.
 
 ## Bank Agent (object)
-- financialInstitutionIdentification (object)
-    - bic: `CZ0708000000001019382023` (string, required)
-    - clearingSystemMemberIdentification (object, required)
-        - memberIdentification: identification (string, required)
-
-## Balance Check (object)
-- exchangeIdentification: `584161` (string, required) Unique identification of the request.
-- debtorAccount (Debtor Account, required) Payer account.
-- transactionDetails (object, required)
-    - currency: `CZK` (string, required)
-    - totalAmount: `1000` (number, required)
-
-## Balance Result (object)
-- responseIdentification: `1010` (number, required) Unique identification of response to query for Balance Check.
-- exchangeIdentification: `12842566` (string, required) Repeated identification of a payment transaction (query for Balance Check) from the issuer of the card to which the request for Balance Check linked to the account.
-- response (Balance Result Code, required)
-
-## Balance Result Code (enum)
-- APPR (string) Enough funds on this account.
-- DECL (string) Insufficient funds on this account.
-
-## Payment Create Request (object)
-- paymentIdentification (object, required)
-    - instructionIdentification: `46545646546546` (string, required) unique identification of the payment instruction.
-- amount (object, required)
-    - instructedAmount (Amount, required)
-- requestedExecutionDate: `2019-01-01` (string, optional) Requested date to execute the transaction.
-- debtorAccount (Debtor Account, required) Information about debtor account.
-- creditorAccount (Creditor Account, required) Information about creditor account.
-
-## Debtor Account
-- identification (object, required)
-    - iban: `CZ1560000000002020010045` (string, required)
-    - other (object, optional)
-        - identification: `VS9212114545` (string, required) Unique system identification of the client account.
-- currency: `CZK` (string, optional)
-
-## Creditor Account
-- identification (object, required)
-    - iban: `CZ1560000000002020010045` (string, required)
-
-## Payment Response (Payment Create Request)
-- transactionIdentification: `445` (string, required)
-- serviceLevel (object, required)
-    - code: `DMCT` (string, required)
-- signInfo (Sign Info, required)
-- instructionStatus (Instruction Status, required)
-- scenarios: `SMS` (array[string], required)
-
-## Instruction Status (enum)
-- ACTC (string) AcceptedTechnicalValidation – Authentication and syntactical validation are successful.
-- RJCT (string) Rejected – Payment rejected.
-- ACSP (string) AcceptedSettlementInProcess – The payment initiation has been accepted for execution.
-- ACSC (string) AcceptedSettlementCompleted – Settlement on the debtor´s account has been completed.
-
-## Payment Status Response (object)
-- instructionStatus (Instruction Status, required)
-
-## Initiation Request (object)
-- authorizationType: `SMS` (string, required)
-- redirectUrl: `https://www.bank.cz/redirect` (string, required)
-
-## Initiation Response (object)
-- authorizationType: `SMS` (string, required)
-- signInfo (Sign Info, required)
-- href (object, required)
-    - url: `https://zonky,cz/psd2-user-auth-page`
-
-## Sign Info (object)
-- state (Authorization Status, required) Status of current transaction authorization.
-- signId: `12546452` (string, required) Unique identifier for current transaction authorization.
-
-## Authorization Status (enum)
-- OPEN      (string) Transaction created.
-- INITIATED (string) Transaction authorization started.
-- FAILED    (string) Transaction expired or failed due to unsuccessful authentication attempts.
-- CANCELLED (string) Transaction cancelled.
-- CONFIRMED (string) Transactions confirmed by the client.
-
-## Authorization Detail (object)
-- signInfo (Sign Info, required)
-- authorizationType: `SMS` (string, optional)
-- scenarios: `SMS` (array[string], required) A set of possible authorization scenarios.
+- financialInstitutionIdentification (object, required) Carries `clearingSystemMemberIdentification` for a four-digit Czech bank code, `bic` otherwise.
+    - bic: `KOMBCZPP` (string, optional)
+    - clearingSystemMemberIdentification (object, optional)
+        - memberIdentification: `0100` (string, required)
